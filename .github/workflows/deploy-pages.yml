@@ -23,17 +23,40 @@ jobs:
       - name: Rebuild binary assets and verify checksums
         run: |
           set -euo pipefail
-          rm -rf _out && cp -r site _out
-          cd _out
+          rm -rf _out _work && cp -r site _work
+          cd _work
           # Fonts and PDFs are stored base64-encoded (the push tool is text-only); restore them byte-for-byte.
           find . -type f -name '*.b64' -print0 | while IFS= read -r -d '' f; do
             base64 -d "$f" > "${f%.b64}"
             rm "$f"
           done
-          mv SHA256SUMS ../SHA256SUMS
-          sha256sum -c ../SHA256SUMS
-          echo "Files in published site: $(find . -type f | wc -l)"
+          sha256sum -c SHA256SUMS
+          # Publish only the files listed in the manifest, so older builds never go live.
+          mkdir -p ../_out
+          cut -c67- SHA256SUMS | while IFS= read -r f; do
+            mkdir -p "../_out/$(dirname "$f")"
+            cp "$f" "../_out/$f"
+          done
+          cd ../_out
           touch .nojekyll
+          echo "Files in published site: $(find . -type f | wc -l)"
+
+      - name: Remove older build files from main
+        run: |
+          set -euo pipefail
+          cut -c67- site/SHA256SUMS | sed 's#^#site/#' > /tmp/keep
+          sed 's/$/.b64/' /tmp/keep > /tmp/keep_b64
+          cat /tmp/keep_b64 >> /tmp/keep
+          echo site/SHA256SUMS >> /tmp/keep
+          git ls-files site | grep -vxF -f /tmp/keep > /tmp/stale || true
+          if [ -s /tmp/stale ]; then
+            echo "Removing $(wc -l < /tmp/stale) older build files"
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            xargs -a /tmp/stale git rm -q
+            git commit -q -m "Remove older build files [skip ci]"
+            git push -q origin HEAD:main
+          fi
 
       - name: Publish to gh-pages branch
         run: |
